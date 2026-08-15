@@ -339,7 +339,7 @@ class LocalModelBox(QGroupBox):
         if wanted and self.model.findData(wanted) < 0:
             self.model.addItem(f"{wanted}  ({t('not downloaded')})", wanted)
         index = self.model.findData(wanted)
-        self.model.setCurrentIndex(max(index, 0))
+        self.model.setCurrentIndex(index if wanted else -1)
         self.model.blockSignals(False)
         self._fit_popup(self.model)
         self._wanted = ""

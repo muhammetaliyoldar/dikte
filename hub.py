@@ -20,6 +20,7 @@ import collections
 import json
 import os
 import pathlib
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -32,8 +33,13 @@ HF_API = "https://huggingface.co/api"
 HF_FILES = "https://huggingface.co"
 USER_AGENT = "dikte/1.0 (+https://github.com/yusufipk/dikte)"
 
-CACHE_DIR = (pathlib.Path(os.environ.get("XDG_CACHE_HOME")
-                          or os.path.expanduser("~/.cache")) / "dikte")
+CACHE_DIR = (
+    (pathlib.Path(os.environ.get("LOCALAPPDATA") or pathlib.Path.home() / "AppData/Local")
+     / "Dikte" / "cache")
+    if sys.platform == "win32"
+    else (pathlib.Path(os.environ.get("XDG_CACHE_HOME")
+                       or os.path.expanduser("~/.cache")) / "dikte")
+)
 # Long enough that opening the settings window twice in an evening asks nobody
 # anything, short enough that a model published this morning is offered today.
 CACHE_TTL = 6 * 3600

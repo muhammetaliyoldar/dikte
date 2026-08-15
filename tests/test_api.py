@@ -131,7 +131,9 @@ class Multipart(DikteTest):
     def test_the_file_goes_in_with_its_name_and_type(self):
         body, _ = self.build([])
         self.assertIn(b'filename="clip.wav"', body)
-        self.assertIn(b"Content-Type: audio/x-wav", body)
+        # The wav media type is what the registry on this machine says it is;
+        # audio/wav and audio/x-wav both come out of the platform's MIME table.
+        self.assertRegex(body, rb"Content-Type: audio/(x-)?wav")
         self.assertIn(b"RIFFfake", body)
 
     def test_a_boundary_is_not_reused_between_requests(self):

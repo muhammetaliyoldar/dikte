@@ -95,7 +95,10 @@ class Dikte:
         # started it cannot stop the one that came after.
         self._run_id = 0
 
-        self.overlay = Overlay(self.conf["overlay_corner"])
+        self.overlay = Overlay(self.conf["overlay_corner"], clickable=True)
+        # Clicking the recording indicator ends it, as an alternative to the
+        # toggle key.
+        self.overlay.clicked.connect(self._toggle)
         # The agent's indicator sits on top of the dictation one when both are
         # up, and drops into the corner when it is alone there.
         self.ask_overlay = Overlay(self.conf["overlay_corner"], below=self.overlay,
@@ -915,6 +918,13 @@ def _clock(seconds):
 
 def main():
     argv = sys.argv[1:]
+    # Windows consoles are often still an ANSI code page, so the ✓ and ✗ the
+    # command line prints would crash the program when asked to encode. Let
+    # the streams carry UTF-8 and whatever cannot be written degrades instead.
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
     # Anything typed at a terminal is the command line's business, including
     # --help and the verbs that only need a message sent. It comes back here
     # with --gui when it turns out there is no instance to send one to.
@@ -951,7 +961,10 @@ def install_signal_handlers(app):
         app.quit()          # aboutToQuit runs shutdown()
 
     notifier.activated.connect(woken)
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signals = [signal.SIGINT, signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):    # Windows has no SIGHUP
+        signals.append(signal.SIGHUP)
+    for sig in signals:
         # A handler that does nothing, so that the default action, stopping the
         # process where it stands, is replaced by the wakeup above.
         signal.signal(sig, lambda *_: None)

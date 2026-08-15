@@ -80,6 +80,13 @@ class DikteTest(unittest.TestCase):
         i18n.set_language("en")
         self.addCleanup(i18n.set_language, "en")
 
+        # A key sitting in the environment would otherwise reach the code that
+        # falls back to it, and the tests for "there is no key" would pass only
+        # on a machine without one. tests/__init__.py clears the variables; the
+        # Windows registry is the same key in a second hiding place, so it is
+        # cut off the same way.
+        self.patch_attr(cfg, "_windows_user_environment", lambda name: "")
+
         # cli.launch_gui replaces this process with the application when no
         # instance is running. A test that reaches it would take the whole run
         # with it and hang, so it fails loudly here instead.

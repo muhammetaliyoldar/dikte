@@ -1,15 +1,18 @@
 # Dikte
 
-Press `Ctrl+Space`, talk, press again. The recording is transcribed on this
-machine by default, a model cleans it up (dropping the *uh*s, the restarts, the
-missing punctuation), and the result lands in your clipboard and is pasted into
-whatever window you were typing in.
+Press `Ctrl+Space`, talk, press again. The recording is transcribed, a model
+cleans it up (dropping the *uh*s, the restarts, the missing punctuation), and
+the result lands in your clipboard and is pasted into whatever window you were
+typing in.
 
-Built for KDE Plasma 6 on Wayland, and runs on GNOME X11 and macOS too. No
-dependencies beyond system packages: just the Python standard library, 3.11 or
-newer, and PyQt6.
+Runs on **Windows**, and on KDE Plasma 6 / Wayland, GNOME X11 and macOS. No
+framework: just the Python standard library, 3.11 or newer, and PyQt6.
 
 *[Türkçe README](README.tr.md)*
+
+> This is a Windows port of the original *dikte* by **Yusuf İpek**
+> ([yusufipk/dikte](https://github.com/yusufipk/dikte)). All credit for the
+> design and most of the code goes to him.
 
 <p align="center">
   <img src="docs/settings-general.webp" width="820" alt="Dikte settings, General tab">
@@ -21,7 +24,66 @@ newer, and PyQt6.
 | <img src="docs/settings-agent.webp" width="410" alt="Agent"> | <img src="docs/settings-meeting.webp" width="410" alt="Meeting"> |
 | <img src="docs/settings-audio-file.webp" width="410" alt="Audio file"> | <img src="docs/settings-shortcuts.webp" width="410" alt="Shortcuts"> |
 
-## Install
+## Requirements
+
+**Python 3.11 or newer** and **PyQt6**. Everything else Dikte needs (ffmpeg,
+whisper.cpp, llama.cpp, wl-clipboard, xdotool, …) is either fetched from the
+settings window itself or listed below per platform. Recording, transcribing
+and cleaning up all work here on models of your own, so the only hard
+requirement on any OS is Python and PyQt6.
+
+## Install (Windows)
+
+Requirements: **Python 3.11+** (from python.org, with *Add to PATH* ticked),
+**PyQt6** (`pip install PyQt6`) and **ffmpeg** (`winget install Gyan.FFmpeg`).
+Recording and meetings are captured through ffmpeg's DirectShow backend.
+
+```powershell
+./install.ps1       # launchers, PATH, Start menu entry, autostart
+dikte               # the settings window opens on first run
+```
+
+`install.ps1` adds the `dikte` command, a Start menu entry and an autostart
+entry. `./update.ps1` pulls the latest source from git and puts all of that
+back; `./uninstall.ps1` takes it away again and leaves your settings and
+dictations alone unless you pass `-Purge`.
+
+The global shortcuts arrive through Dikte's built-in listener (`RegisterHotKey`),
+which is always on on Windows — there is no shortcut registry to write to, so
+nothing else to install. The keys are the `shortcut` and `cancel_shortcut`
+settings (defaults `Ctrl+Space` and `Ctrl+Alt+Space`); change them in
+Settings → Shortcuts.
+
+## Install (Ubuntu)
+
+Ubuntu 22.04 and later, on GNOME X11. Recording uses PulseAudio, clipboard and
+pasting use the X11 tools, and the global shortcuts are caught by Dikte's own
+built-in listener (which reads the keys itself, so there is nothing to install
+into the desktop):
+
+```sh
+sudo apt update
+sudo apt install -y git ffmpeg pulseaudio-utils xclip xdotool python3-venv
+pip install --user PyQt6
+
+git clone <your-repo-url> dikte && cd dikte
+python dikte.py       # the settings window opens on first run
+```
+
+A Wayland session needs the corresponding tools instead, plus the `input` group
+for the hotkey listener (see the shortcut section below):
+
+```sh
+sudo apt install -y git ffmpeg pipewire-audio wl-clipboard ydotool python3-venv
+sudo usermod -aG input $USER     # then log out and back in
+```
+
+On Linux, keys and settings are stored in `~/.config/dikte/config.json` (mode
+600) and dictations in `~/.local/share/dikte`.
+
+## Install (Other Linux and macOS)
+
+On Arch/Manjaro, KDE Plasma 6 / Wayland:
 
 ```sh
 sudo pacman -S --needed pipewire-audio wl-clipboard ydotool ffmpeg python-pyqt6
@@ -48,40 +110,47 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now ydotool
 ```
 
-On Ubuntu/GNOME X11, recording uses PulseAudio and clipboard/paste use the X11
-tools instead:
-
-```sh
-sudo apt install pulseaudio-utils xclip xdotool ffmpeg
-```
-
 macOS has no shortcut registry for `install.sh` to install into, so the listener
 that catches the keys is the mechanism there and there is nothing to run:
 `brew install ffmpeg`, `pip install PyQt6`, then `python dikte.py`. A meeting
 needs BlackHole or Loopback, because nothing else offers what the speakers are
-playing.
+playing. On macOS settings and dictations live in
+`~/Library/Application Support/Dikte`.
 
-`install.sh` adds the `dikte` command, a menu entry, an autostart entry and the
-two global shortcuts, whose keys are its two arguments. `./update.sh` pulls and
-puts all of that back, keeping the keys you chose; `./uninstall.sh` takes it away
-again and leaves your settings and dictations alone unless you pass `--purge`.
+## API keys
 
-Speech to text and cleanup each pick a provider in the settings window, and both
-run here by default, on models of your own. The cloud is the other option:
-speech to text on **OpenAI**, **Groq** or **OpenRouter** (`gpt-4o-transcribe`),
-cleanup on OpenRouter (`google/gemini-3.5-flash-lite`) or, when either is
-installed, on Claude Code or Codex. The keys fall back to `OPENAI_API_KEY`,
-`GROQ_API_KEY` and `OPENROUTER_API_KEY`, and are stored in
-`~/.config/dikte/config.json`, mode 600, or in
-`~/Library/Application Support/Dikte` on a Mac. Cleanup can be switched off, in
-which case the raw transcript is pasted, and a thinking model's effort can be
-set next to it.
+Speech to text and cleanup each pick a provider in the settings window. Both can
+run here on models of your own (whisper.cpp and llama.cpp, fetched and verified
+from the settings window), or in the cloud: speech to text on **OpenAI**,
+**Groq** or **OpenRouter**, cleanup on OpenRouter or, when either is installed,
+on Claude Code or Codex.
+
+Keys are read from the environment — `OPENAI_API_KEY`, `GROQ_API_KEY`,
+`OPENROUTER_API_KEY` — and are never stored in a file:
+
+- **On Windows** the keys you enter in Settings are stored by the installer as
+  user environment variables in the registry (`HKCU\Environment`), which is why
+  a shell started earlier can still find them.
+- **On Linux** export them in `~/.bashrc` (or `~/.zshrc`):
+
+  ```sh
+  export GROQ_API_KEY="gsk_…"
+  export OPENROUTER_API_KEY="sk-or-…"
+  source ~/.bashrc
+  ```
+
+  then restart Dikte. The recommended, cheapest setup is **Groq** for speech to
+  text (`openai/whisper-large-v3-turbo`, about $0.04 per hour of audio, with a
+  generous free quota) and **OpenRouter** for cleanup (`google/gemini-2.5-flash-lite`,
+  a few hundredths of a cent per dictation). Settings are stored in
+  `%APPDATA%\Dikte\config.json` on Windows, `~/.config/dikte/config.json` on
+  Linux; downloaded models in `%LOCALAPPDATA%\Dikte` and `~/.local/share/dikte`.
 
 ## Using it
 
 | What | How |
 | --- | --- |
-| Start / stop recording | `Ctrl+Space`, or click the tray icon |
+| Start / stop recording | `Ctrl+Space`, or click the recording indicator |
 | Discard the recording | `Ctrl+Alt+Space`, tray menu, or `dikte cancel` |
 | Speak a command to an agent | Tray menu → *Ask Claude*, or `dikte ask` |
 | Start / end a meeting | Tray menu → *Record a meeting*, or `dikte meeting` |
@@ -89,12 +158,13 @@ set next to it.
 | Reload after an update | Tray menu → *Restart*, or `dikte restart` |
 | Quit | Tray menu → *Quit*, or `dikte quit` |
 
-An indicator in the screen corner shows a red dot, a live waveform and the
-elapsed time, then the stage it is on. It never takes focus. Pressing
-`Ctrl+Space` again while Dikte is still working does nothing; nothing queues up.
-A dictation and a command to the agent do wait on each other for the microphone,
-which is one device, but for nothing else: each has its own indicator, and the
-second one stacks above the first while both are up.
+An indicator in the screen corner shows a live waveform, the elapsed time and
+the stage it is on. It never takes focus, and clicking the recording indicator
+ends the recording, the same way the toggle key does. Pressing `Ctrl+Space`
+again while Dikte is still working does nothing; nothing queues up. A dictation
+and a command to the agent do wait on each other for the microphone, which is
+one device, but for nothing else: each has its own indicator, and the second one
+stacks above the first while both are up.
 
 Everything the settings window holds has a verb of its own too, so a script or
 an agent can work the whole thing: `dikte record --seconds 8` says back what was
@@ -105,9 +175,9 @@ running.
 
 ## What it does
 
-- **It all runs on this machine by default.** Speech to text on whisper.cpp and
-  cleanup on llama.cpp, neither installed beforehand: the settings window fetches
-  the program and the model, verifies the sha256 and refuses a download published
+- **It can all run on this machine.** Speech to text on whisper.cpp and cleanup
+  on llama.cpp, neither installed beforehand: the settings window fetches the
+  program and the model, verifies the sha256 and refuses a download published
   without one, then keeps a server alive while you dictate. The graphics card is
   reached through CUDA, ROCm or Vulkan where the build allows. No key, no
   account, nothing leaving the machine.
@@ -150,10 +220,8 @@ running.
   instead of guessing at it. The two sides are transcribed separately and
   interleaved into one timestamped transcript, and a second model, configured
   under Settings → Meeting along with its own instruction, turns that into
-  minutes: decisions, action items, open questions. They land in
-  `~/.local/share/dikte/meetings` and in Settings → Minutes. A run that fails
-  keeps its recording, and a retry resumes from the transcript it already paid
-  for.
+  minutes: decisions, action items, open questions. A run that fails keeps its
+  recording, and a retry resumes from the transcript it already paid for.
 - **Audio and video files** run through the same models under Settings → Audio
   file, optionally with `[mm:ss]` timestamps, chunked through ffmpeg when long,
   and saved as `.txt` or as `.srt` subtitles; their cleanup follows its own rules,
@@ -162,7 +230,7 @@ running.
   right-click to delete.
 - **Turkish and English interface**, following the system locale by default.
 
-## The global shortcuts need one logout
+## The global shortcuts on Linux need one logout
 
 KWin only reads `kglobalshortcutsrc` at startup, so the shortcuts `install.sh`
 writes will not fire until you log out and back in. Until then, Settings →
@@ -170,6 +238,7 @@ Shortcuts → **built-in listener** reads `/dev/input` and catches the combinati
 itself. The difference: it does not swallow the key, so `Ctrl+Space` also reaches
 the focused application (some editors will pop up autocomplete). The listener
 needs your user in the `input` group: `sudo usermod -aG input $USER`.
+(Windows has no such step: the built-in listener is the mechanism there.)
 
 ## Layout
 
@@ -177,7 +246,7 @@ needs your user in the `input` group: `sudo usermod -aG input $USER`.
 dikte.py          entry point, tray icon, state machine
 cli.py            the command line: every verb, and what it answers with
 ipc.py            one request and one reply over the local socket
-audio.py          PCM capture: pw-record for dictation, ffmpeg for a meeting
+audio.py          PCM capture: pw-record or ffmpeg/dshow for dictation and meetings
 meeting.py        channel split, speaker labelling, cleanup, minutes
 assistant.py      running a dictation through Claude Code, Codex or OpenRouter
 api.py            transcription and cleanup requests (stdlib only)
@@ -189,13 +258,10 @@ vad.py            deciding whether a recording holds speech at all
 filetranscribe.py file transcription: ffmpeg, chunking, timestamps
 overlay.py        the corner indicator
 settings_ui.py    settings window
-hotkey.py         KDE shortcut installation and the evdev listener
-paste.py          wl-clipboard and ydotool wrappers
+hotkey.py         shortcut installation and the built-in hotkey listener
+paste.py          clipboard and key-press wrappers
 i18n.py           the string table
 ```
-
-The indicator is drawn through XWayland, because a Wayland client cannot place a
-window in a screen corner; `dikte.py` sets `QT_QPA_PLATFORM=xcb` for that.
 
 ## License
 

@@ -8,13 +8,29 @@ understood, because that is what earlier versions sent and what a stale KDE
 shortcut may still send.
 """
 
+import getpass
+import hashlib
 import json
 import os
 import sys
 
 from PyQt6.QtNetwork import QLocalSocket
 
-SERVER_NAME = "dikte-" + str(os.getuid())
+
+def _session_key():
+    """Who this user is, in a string QLocalServer can take.
+
+    On Linux the numeric uid is unique and stable. Windows has no getuid, and
+    the socket lives in this user's own session directory anyway, so a short
+    hash of the account name is all the separation it needs.
+    """
+    if hasattr(os, "getuid"):
+        return str(os.getuid())
+    user = getpass.getuser()
+    return hashlib.sha1(user.encode("utf-8")).hexdigest()[:10]
+
+
+SERVER_NAME = "dikte-" + _session_key()
 
 # Long enough for a process that is already running to answer, short enough that
 # "nothing is running" is not a noticeable pause in front of a key press.

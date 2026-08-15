@@ -1,4 +1,27 @@
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+venv/
+.pytest_cache/
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Never commit keys, settings, recordings or anything the app wrote locally.
+# On Windows these live under %APPDATA%\Dikte and %LOCALAPPDATA%\Dikte; on
+# Linux under ~/.config/dikte and ~/.local/share/dikte. Guard against any of
+# them being copied into the checkout anyway.
+config.json
+*.key
+*.pem
+.env
+.env.*

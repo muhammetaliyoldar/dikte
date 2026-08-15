@@ -18,15 +18,42 @@ def _xdg(var, default):
     return pathlib.Path(os.environ.get(var) or os.path.expanduser(default))
 
 
+def _windows_user_environment(name):
+    """The value of a user environment variable, read from the registry.
+
+    Python only copies the environment a parent handed down, so a variable set
+    for the user while the program's process tree was already alive never shows
+    up in os.environ. The user's environment lives in the registry regardless,
+    so that is where a missing variable is looked up. Reading a key the user
+    could not even edit is a privacy corner, and one that needs no logging.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return ""
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            value, _kind = winreg.QueryValueEx(key, name)
+            return str(value).strip()
+    except (OSError, ValueError):
+        return ""
+
+
 def _directories(platform=None):
     """(settings, data), in the two places this system keeps them.
 
     macOS keeps both in the one directory a Mac user's backup already knows
-    about. Everywhere else they are separate and follow the XDG variables.
+    about. Windows keeps them in AppData. Everywhere else they are separate
+    and follow the XDG variables.
     """
-    if (platform or sys.platform) == "darwin":
+    here = platform or sys.platform
+    if here == "darwin":
         support = pathlib.Path.home() / "Library/Application Support/Dikte"
         return support, support
+    if here == "win32":
+        base = pathlib.Path(os.environ.get("APPDATA")
+                            or pathlib.Path.home() / "AppData/Roaming") / "Dikte"
+        return base, base
     return (_xdg("XDG_CONFIG_HOME", "~/.config") / "dikte",
             _xdg("XDG_DATA_HOME", "~/.local/share") / "dikte")
 
@@ -548,7 +575,8 @@ class Config:
         tmp = CONFIG_FILE.with_suffix(".json.tmp")
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(self.data, fh, ensure_ascii=False, indent=2)
-        os.chmod(tmp, 0o600)
+        if sys.platform != "win32":
+            os.chmod(tmp, 0o600)
         tmp.replace(CONFIG_FILE)
         i18n.set_language(self.data["ui_language"])
 
@@ -562,8 +590,18 @@ class Config:
         return self.data.get(key, DEFAULTS.get(key, default))
 
     def api_key(self, setting):
-        """A stored key, or the environment variable that shares its name."""
-        return self[setting].strip() or os.environ.get(setting.upper(), "").strip()
+        """A stored key, or the environment variable that shares its name.
+
+        On Windows the environment variable is stored by the installer in the
+        user's registry. A process started before that, or one launched from a
+        session whose parent was, does not inherit it into os.environ; the
+        registry is the record that is always there, so it is the fallback for
+        a process that came up without the variable.
+        """
+        value = self[setting].strip() or os.environ.get(setting.upper(), "").strip()
+        if not value and sys.platform == "win32":
+            value = _windows_user_environment(setting.upper())
+        return value
 
     def openai_key(self):
         return self.api_key("openai_api_key")

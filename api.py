@@ -12,12 +12,14 @@ is up, which is the one thing this module has to fill in for it.
 
 import collections
 import contextlib
+import ctypes
 import http.client
 import json
 import mimetypes
 import os
 import secrets
 import socket
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -119,6 +121,7 @@ class _Sockets:
     def __init__(self):
         self._lock = threading.Lock()
         self._conns = []
+        self._fps = []
         self._cut = False
 
     def add(self, conn):
@@ -127,12 +130,32 @@ class _Sockets:
                 raise Aborted
             self._conns.append(conn)
 
+    def track(self, fp):
+        """Register the response's reader so a stop can wake a read waiting on it.
+
+        urllib hands the read out through a makefile, and on Windows that file
+        holds a duplicate of the socket, so closing the connection itself leaves
+        a blocked read sitting there. Closing the file object makes it return.
+        """
+        with self._lock:
+            if self._cut:
+                raise Aborted
+            self._fps.append(fp)
+
     def cut(self):
         with self._lock:
             self._cut = True
             conns = list(self._conns)
+            fps = list(self._fps)
         for conn in conns:
             _stop_using(conn)
+        for fp in fps:
+            _stop_reading(fp)
+
+
+def _stop_reading(fp):
+    with contextlib.suppress(OSError, ValueError):
+        fp.close()
 
 
 def _stop_using(conn):
@@ -141,15 +164,36 @@ def _stop_using(conn):
     A connection whose socket is not open yet would open one on the next line,
     so the reconnect is turned off first. One that is open is being read from,
     and close() alone leaves that read waiting for bytes which are never coming
-    now; the shutdown is what makes it return.
+    now; the shutdown is what makes it return. On Windows the shutdown does not
+    reach a blocked read: Python defers the real close while a makefile holds a
+    reference to the socket, so the handle itself is closed here to make the
+    read return where it stands.
     """
     conn.auto_open = 0
     sock = getattr(conn, "sock", None)
     if sock is not None:
         with contextlib.suppress(OSError):
             sock.shutdown(socket.SHUT_RDWR)
+        if sys.platform == "win32":
+            _close_socket_handle(sock)
     with contextlib.suppress(OSError):
         conn.close()
+
+
+def _close_socket_handle(sock):
+    try:
+        handle = sock.fileno()
+    except OSError:
+        return
+    try:
+        _WS2_32.closesocket(handle)
+    except OSError:
+        pass
+
+
+_WS2_32 = ctypes.WinDLL("ws2_32")
+_WS2_32.closesocket.argtypes = [ctypes.c_size_t]
+_WS2_32.closesocket.restype = ctypes.c_int
 
 
 class _TrackedHTTP(urllib.request.HTTPHandler):
@@ -196,6 +240,7 @@ def _opened(req, timeout, aborter):
     sockets = _Sockets()
     opener = urllib.request.build_opener(_TrackedHTTP(sockets), _TrackedHTTPS(sockets))
     with aborter.holding(sockets.cut), opener.open(req, timeout=timeout) as resp:
+        sockets.track(resp.fp)
         yield resp
 
 
@@ -218,7 +263,13 @@ def _request(url, data, headers, timeout=120, aborter=None):
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with _opened(req, timeout, aborter) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            data = resp.read()
+            # Closing the response's reader from the Stop wakes the read with an
+            # empty body rather than an exception, so what stopped it has to be
+            # asked here instead of taking the empty reply for the answer.
+            if aborter is not None and aborter.aborted:
+                raise Aborted
+            return json.loads(data.decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", "replace")
         raise ApiError(f"HTTP {exc.code}: {_extract_error(body)}", exc.code) from exc

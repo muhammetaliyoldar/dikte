@@ -3,7 +3,7 @@
 import math
 import sys
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, pyqtSignal
 from PyQt6.QtGui import QColor, QCursor, QFont, QPainter, QPainterPath, QPen, QFontMetrics
 from PyQt6.QtWidgets import QWidget, QApplication
 
@@ -14,18 +14,18 @@ MAX_WIDTH = 460
 MARGIN = 28
 GAP = 10        # between two indicators sharing a corner
 
-BG = QColor(22, 24, 29, 238)
-BORDER = QColor(255, 255, 255, 28)
-TEXT = QColor(235, 237, 242)
-MUTED = QColor(150, 156, 168)
-REC = QColor(240, 78, 82)
-BUSY = QColor(120, 170, 255)
-OK = QColor(80, 205, 140)
+BG = QColor(10, 10, 14, 238)
+BORDER = QColor(168, 85, 247, 70)
+TEXT = QColor(240, 242, 248)
+MUTED = QColor(142, 142, 168)
+REC = QColor(168, 85, 247)       # purple, for the recording dot
+BUSY = QColor(155, 120, 255)
+OK = QColor(110, 220, 150)
 ERR = QColor(240, 100, 90)
-WARN = QColor(240, 180, 80)
-THEM = QColor(110, 190, 255)   # the other side of a meeting
+WARN = QColor(240, 200, 90)
+THEM = QColor(245, 205, 95)      # yellow, the other side of a meeting
 
-ASK = QColor(150, 140, 255)    # recording a command rather than a dictation
+ASK = QColor(190, 140, 255)      # recording a command rather than a dictation
 
 STATE_COLORS = {"recording": REC, "asking": ASK, "meeting": REC, "busy": BUSY,
                 "done": OK, "warning": WARN, "error": ERR}
@@ -37,7 +37,10 @@ class Overlay(QWidget):
     of covering it, which is what lets a dictation and a command to the agent be
     under way at the same time and still both be visible."""
 
-    def __init__(self, corner="bottom-left", below=None, dismissable=False):
+    clicked = pyqtSignal()
+
+    def __init__(self, corner="bottom-left", below=None, dismissable=False,
+                 clickable=False):
         super().__init__(None)
         self.corner = corner
         self.below = below
@@ -45,6 +48,10 @@ class Overlay(QWidget):
         # ten minutes. Clicking such an indicator puts the progress away; the
         # work carries on and its result still shows up.
         self.dismissable = dismissable
+        # The dictation indicator can be clicked to end the recording, as an
+        # alternative to the toggle key. It needs the window to receive the
+        # click, which is what dismissable gets for a different reason.
+        self.clickable = clickable
         self.muted = False
         self._stacked = False
         self.state = "idle"
@@ -61,9 +68,10 @@ class Overlay(QWidget):
             | Qt.WindowType.Tool
             | Qt.WindowType.WindowDoesNotAcceptFocus
         )
-        if sys.platform != "darwin":
+        if sys.platform not in ("darwin", "win32"):
             # It is the window manager that would otherwise move this out of
-            # the corner. macOS has no such hint, and Qt warns about it.
+            # the corner. Windows has no such hint (and Qt warns about it),
+            # like macOS.
             flags |= Qt.WindowType.X11BypassWindowManagerHint
         # One that can be clicked away has to receive the click, which means it
         # also swallows one aimed at whatever is underneath it. The rest stay
@@ -75,7 +83,7 @@ class Overlay(QWidget):
         # the window is created and cannot be turned off later without the
         # window being torn down and built again, which is why the dismissable
         # one has to shrink itself instead (see _conceal).
-        if dismissable:
+        if dismissable or clickable:
             self.setCursor(Qt.CursorShape.PointingHandCursor)
         else:
             flags |= Qt.WindowType.WindowTransparentForInput
@@ -151,11 +159,15 @@ class Overlay(QWidget):
         self._conceal()
 
     def mousePressEvent(self, event):
-        # Only a job in progress can be waved away. A recording is short and
-        # ending it by accident would cost the words; an outcome goes on its own.
+        # A clickable indicator ends the run it is showing: the dictation one
+        # stops the recording, the same way the toggle key would. Only a job in
+        # progress can be waved away. A recording is short and ending it by
+        # accident would cost the words; an outcome goes on its own.
         if self.dismissable and self.state == "busy":
             self.muted = True
             self.dismiss()
+        elif self.clickable and self.state in LIVE:
+            self.clicked.emit()
         event.accept()
 
     @property
@@ -208,7 +220,7 @@ class Overlay(QWidget):
         self.state = "hidden"
         self._concealed = True
         self.repaint()
-        if self.dismissable:
+        if self.dismissable or self.clickable:
             self.resize(1, 1)
 
     def _resize_to_content(self):

@@ -70,7 +70,8 @@ class Recorder(QObject):
 
         try:
             self._proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0,
+                **_dshow_flags(),
             )
         except OSError as exc:
             self.failed.emit(t("Could not start recording: {error}", error=exc))
@@ -122,16 +123,7 @@ class Recorder(QObject):
 
     def _terminate(self):
         self._stopping = True
-        proc = self._proc
-        if proc and proc.poll() is None:
-            try:
-                proc.send_signal(signal.SIGINT)
-                proc.wait(timeout=1.5)
-            except (subprocess.TimeoutExpired, OSError):
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
+        _terminate_process(self._proc)
 
     def cancel(self):
         self._cancelled = True
@@ -246,7 +238,8 @@ class MeetingRecorder(QObject):
             # nobody drains would eventually block it, so it writes to a file.
             self._log = tempfile.TemporaryFile()
             self._proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=self._log, bufsize=0
+                cmd, stdout=subprocess.PIPE, stderr=self._log, bufsize=0,
+                **_dshow_flags(),
             )
         except (OSError, wave.Error) as exc:
             self._close_file()
@@ -295,16 +288,7 @@ class MeetingRecorder(QObject):
 
     def _terminate(self):
         self._stopping = True
-        proc = self._proc
-        if proc and proc.poll() is None:
-            try:
-                proc.send_signal(signal.SIGINT)
-                proc.wait(timeout=2)
-            except (subprocess.TimeoutExpired, OSError):
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
+        _terminate_process(self._proc)
 
     def _close_file(self):
         with self._lock:
@@ -409,6 +393,36 @@ def _peak(samples):
     if not samples:
         return 0.0
     return min(1.0, max(abs(min(samples)), abs(max(samples))) / 32768.0)
+
+
+def _terminate_process(proc):
+    """Ask a recorder to end, then insist.
+
+    SIGINT is how pw-record, parec and ffmpeg end a pipe gracefully. Windows
+    has no POSIX signals: terminate() is a hard stop, which is fine here because
+    nothing the recorder is writing needs to be finalised on its side — the PCM
+    comes out of its stdout and is written to disk by Dikte itself.
+    """
+    if proc is None or proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        try:
+            proc.terminate()
+            proc.wait(timeout=2)
+            return
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    else:
+        try:
+            proc.send_signal(signal.SIGINT)
+            proc.wait(timeout=1.5)
+            return
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 # --- the sound system, one group per machine -------------------------------
@@ -632,9 +646,257 @@ COREAUDIO = Sound(
     missing="ffmpeg not found. Install it with: brew install ffmpeg",
 )
 
+# --- Windows ---------------------------------------------------------------
+
+# Windows has no native loopback source either: what the speakers are playing
+# is not an input, and the only way to record it is a driver that pretends to
+# be one. VB-Audio Virtual Cable is the one everyone installs, and many sound
+# cards still offer a "Stereo Mix" recording device. These are what the name
+# matching below looks for.
+LOOPBACK_HINTS = ("cable output", "stereo mix", "virtual audio", "vb-audio",
+                  "vb-cable", "aux ", "waveout", "loopback")
+
+
+def _dshow_flags():
+    # A console window per dictation would flash in the user's face.
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)} if sys.platform == "win32" else {}
+
+
+def _dshow_record(target):
+    """One capture device through ffmpeg's DirectShow backend.
+
+    This is the one recorder that needs ffmpeg for a dictation as well as for
+    a meeting, which is fine: the installer puts it there, and the settings
+    window says why when it is missing.
+    """
+    if not shutil.which("ffmpeg"):
+        return []
+    cmd = [
+        "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error",
+        "-f", "dshow", "-i", f"audio={target or _default_input()}",
+        "-ac", str(CHANNELS), "-ar", str(RATE), "-f", "s16le", "-",
+    ]
+    return cmd
+
+
+def _dshow_meeting(mic_target, system_target):
+    return [
+        "ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "error",
+        "-thread_queue_size", "4096",
+        "-f", "dshow", "-i", f"audio={mic_target or _default_input()}",
+        "-thread_queue_size", "4096",
+        "-f", "dshow", "-i", f"audio={system_target}",
+        "-filter_complex", MERGE_FILTER, "-map", "[out]",
+        "-f", "s16le", "-ar", str(RATE), "-",
+    ]
+
+
+def _default_input():
+    """The friendly name of Windows' current default capture device, or ''.
+
+    ffmpeg's dshow needs a name where the sound servers take "the default", so
+    the default has to be looked up rather than left blank. Asked of the Core
+    Audio API through ctypes: IMMDeviceEnumerator → GetDefaultAudioEndpoint
+    (eCapture) → the FriendlyName property. Falls back to the first real
+    microphone DirectShow lists when the API is not reachable.
+    """
+    if sys.platform != "win32":
+        return ""
+    try:
+        from ctypes import (CFUNCTYPE, HRESULT, Structure, Union, byref, c_ubyte,
+                            c_ulong, c_ushort, c_void_p, c_wchar_p)
+    except ImportError:
+        return ""
+    try:
+        from ctypes import OleDLL, POINTER
+        ole32 = OleDLL("ole32")
+    except OSError:
+        return _first_real_input()
+
+    class GUID(Structure):
+        _fields_ = [("Data1", c_ulong), ("Data2", c_ushort),
+                    ("Data3", c_ushort), ("Data4", c_ubyte * 8)]
+
+    def guid(hexdigits):
+        value = GUID()
+        from ctypes import memmove
+        memmove(byref(value), bytes.fromhex(hexdigits), len(bytes.fromhex(hexdigits)))
+        return value
+
+    CLSID_MMDeviceEnumerator = guid("BCDE0395E52F467C8E3DC4579291692E")
+    IID_IMMDeviceEnumerator = guid("A95664D296144F35A746DE8DB63617E6")
+    PKEY_FriendlyName = guid("A45C254EDF1C4EFD802067D146A850E0")
+
+    class PROPERTYKEY(Structure):
+        _fields_ = [("fmtid", GUID), ("pid", c_ulong)]
+
+    class PROPVARIANT(Structure):
+        class _U(Union):
+            _fields_ = [("pwszVal", c_wchar_p)]
+        _fields_ = [("vt", c_ushort), ("wReserved1", c_ushort),
+                    ("wReserved2", c_ushort), ("wReserved3", c_ushort), ("u", _U)]
+
+    def method(prototype, obj, index):
+        vtable = ctypes.cast(obj, POINTER(POINTER(c_void_p))).contents
+        return prototype(vtable[index])
+
+    E_CAPTURE = 1
+    ACTIVE = 0x00000001
+    VT_LPWSTR = 31
+    release_t = CFUNCTYPE(c_ulong, c_void_p)
+
+    try:
+        if ole32.CoInitialize(None) not in (0, 1):  # S_OK / S_FALSE
+            return _first_real_input()
+        enumerator = c_void_p()
+        hr = ole32.CoCreateInstance(byref(CLSID_MMDeviceEnumerator), None, 1,
+                                    byref(IID_IMMDeviceEnumerator), byref(enumerator))
+        if hr != 0 or not enumerator:
+            ole32.CoUninitialize()
+            return _first_real_input()
+
+        get_default = method(
+            CFUNCTYPE(HRESULT, c_void_p, c_ulong, c_ulong, POINTER(c_void_p)),
+            enumerator, 4)
+        device = c_void_p()
+        hr = get_default(enumerator, E_CAPTURE, ACTIVE, byref(device))
+        release_t(enumerator.value)
+        if hr != 0 or not device:
+            ole32.CoUninitialize()
+            return _first_real_input()
+
+        open_store = method(
+            CFUNCTYPE(HRESULT, c_void_p, c_ulong, POINTER(c_void_p)),
+            device, 4)
+        store = c_void_p()
+        hr = open_store(device, 0, byref(store))
+        if hr != 0 or not store:
+            release_t(ctypes.cast(device, c_void_p).value)
+            ole32.CoUninitialize()
+            return _first_real_input()
+
+        get_value = method(
+            CFUNCTYPE(HRESULT, c_void_p, POINTER(PROPERTYKEY), POINTER(PROPVARIANT)),
+            store, 5)
+        key = PROPERTYKEY(PKEY_FriendlyName, 14)
+        value = PROPVARIANT()
+        name = ""
+        if get_value(store, byref(key), byref(value)) == 0 and value.vt == VT_LPWSTR:
+            name = value.u.pwszVal or ""
+        ole32.PropVariantClear(byref(value))
+        release_t(ctypes.cast(store, c_void_p).value)
+        release_t(ctypes.cast(device, c_void_p).value)
+        ole32.CoUninitialize()
+        return _dshow_identifier_for(name)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return _first_real_input()
+
+
+def _dshow_identifier_for(friendly_name):
+    """The alternative name that belongs to a friendly name, or the name itself.
+
+    The Core Audio API hands out the friendly name (and that is also what the
+    listing shows), but ffmpeg can only match against it when every character
+    fits the ANSI code page. Non-ASCII names are matched through the ASCII
+    "Alternative name" instead, so the identifier for this device is looked up
+    from the listing. A device whose friendly name is already pure ASCII gets
+    it back unchanged, and one not in the listing keeps it too.
+    """
+    if not friendly_name:
+        return _first_real_input()
+    for identifier, name, _loopback in _dshow_devices():
+        if name == friendly_name:
+            return identifier
+    return friendly_name
+
+
+def _first_real_input():
+    """The first microphone DirectShow lists, as a last-resort default."""
+    for identifier, _name, loopback in _dshow_devices():
+        if not loopback:
+            return identifier
+    return ""
+
+
+def _dshow_devices():
+    """[(identifier, name, is_loopback)] for every capture device DirectShow offers.
+
+    The identifier is what the recorder is given, which is what ffmpeg compares
+    against its device list. ffmpeg lists a friendly name and an "Alternative
+    name" per device, and the two are not interchangeable: matching on the
+    friendly name is done with bytes in the ANSI code page, so a name holding
+    characters outside it (Turkish "ı", "ö" on a cp1252 system, say) never
+    matches even though the listing shows it perfectly. The alternative name is
+    plain ASCII and always matches, so that is the identifier. `name` stays for
+    the settings window to show.
+    """
+    if not shutil.which("ffmpeg"):
+        return []
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-f", "dshow", "-list_devices", "true", "-i", "dummy"],
+            capture_output=True, text=True, timeout=8, check=False,
+            **_dshow_flags(),
+        )
+    except (subprocess.SubprocessError, OSError):
+        return []
+    devices = []
+    for line in result.stderr.splitlines():
+        if "Alternative name" in line:
+            # An alternative name always follows the device it belongs to, so
+            # the friendly name parsed on the previous line is swapped for its
+            # ASCII identifier. (ffmpeg 9 prints no section headers, so the
+            # (video) lines and their names have simply been skipped above.)
+            if devices:
+                alt = re.search(r'"([^"]+)"', line)
+                if alt:
+                    _id, name, is_loopback = devices[-1]
+                    devices[-1] = (alt.group(1).strip(), name, is_loopback)
+            continue
+        match = re.search(r'"([^"]+)"', line)
+        if not match:
+            continue
+        name = match.group(1).strip()
+        if not name:
+            continue
+        if " (video)" in line:
+            continue          # the webcam, not a microphone
+        lowered = name.lower()
+        devices.append((name, name,
+                        any(hint in lowered for hint in LOOPBACK_HINTS)))
+    return devices
+
+
+def _dshow_inputs():
+    return [(identifier, name) for identifier, name, _loopback in _dshow_devices()]
+
+
+def _dshow_outputs():
+    return [(identifier, name) for identifier, name, loopback in _dshow_devices()
+            if loopback]
+
+
+def _dshow_default_output():
+    for identifier, _name, loopback in _dshow_devices():
+        if loopback:
+            return identifier
+    return ""
+
+
+WINDOWS = Sound(
+    record=_dshow_record,
+    meeting=_dshow_meeting,
+    inputs=_dshow_inputs,
+    outputs=_dshow_outputs,
+    default_output=_dshow_default_output,
+    missing="ffmpeg not found. Install it with: winget install Gyan.FFmpeg",
+)
+
 
 def sound():
     """The programs this machine records through."""
+    if sys.platform == "win32":
+        return WINDOWS
     return COREAUDIO if sys.platform == "darwin" else PULSE
 
 

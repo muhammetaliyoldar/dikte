@@ -441,6 +441,49 @@ class Overlay(DikteTest):
         self.assertTrue(widget.showing)
         self.assertFalse(widget.muted)
 
+    def test_clicking_a_clickable_one_says_so(self):
+        """The dictation indicator is clicked to end the recording, so a click
+        on it has to come out as a signal and reach whoever owns the run."""
+        from PyQt6.QtCore import QPointF, Qt
+        from PyQt6.QtGui import QMouseEvent
+        clicks = []
+        widget = self.overlay(clickable=True)
+        widget.clicked.connect(lambda: clicks.append(True))
+        widget.show_recording()
+        widget.mousePressEvent(QMouseEvent(
+            QMouseEvent.Type.MouseButtonPress, QPointF(30, 28),
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier))
+        self.assertEqual(clicks, [True])
+
+    def test_clicking_a_plain_indicator_does_nothing(self):
+        """The reading and the busy overlay sit over other things and never
+        take a click; only the one that records has a job a click can do."""
+        from PyQt6.QtCore import QPointF, Qt
+        from PyQt6.QtGui import QMouseEvent
+        clicks = []
+        widget = self.overlay()
+        widget.clicked.connect(lambda: clicks.append(True))
+        widget.show_recording()
+        widget.mousePressEvent(QMouseEvent(
+            QMouseEvent.Type.MouseButtonPress, QPointF(30, 28),
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier))
+        self.assertEqual(clicks, [])
+
+    def test_a_clickable_one_shrinks_out_of_the_way_too(self):
+        """It has to stay clickable, so it cannot be transparent to input; it
+        gets out of the way by leaving nothing there to click instead."""
+        from PyQt6.QtCore import QPointF, Qt
+        from PyQt6.QtGui import QMouseEvent
+        widget = self.overlay(dismissable=True, clickable=True)
+        widget.show_busy("Asking Claude…")
+        self.assertGreater(widget.width(), 1)
+        widget.dismiss()
+        self.assertEqual((widget.width(), widget.height()), (1, 1))
+        widget.show_busy("Asking Claude…")
+        self.assertGreater(widget.width(), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

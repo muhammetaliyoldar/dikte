@@ -26,6 +26,7 @@ interface already knows how to show.
 
 import atexit
 import collections
+import ctypes
 import ctypes.util
 import hashlib
 import http.client
@@ -43,6 +44,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import zipfile
 
 import hub
 from i18n import t
@@ -51,8 +53,13 @@ HOST = "127.0.0.1"
 # The path api.py asks for, so its URL and the server's line up.
 INFERENCE_PATH = "/v1/audio/transcriptions"
 
-DATA_DIR = (pathlib.Path(os.environ.get("XDG_DATA_HOME")
-                         or os.path.expanduser("~/.local/share")) / "dikte")
+DATA_DIR = (
+    (pathlib.Path(os.environ.get("LOCALAPPDATA")
+                  or pathlib.Path.home() / "AppData/Local") / "Dikte")
+    if sys.platform == "win32"
+    else (pathlib.Path(os.environ.get("XDG_DATA_HOME")
+                       or os.path.expanduser("~/.local/share")) / "dikte")
+)
 BIN_DIR = DATA_DIR / "bin"
 MODELS_DIR = DATA_DIR / "models"
 
@@ -148,14 +155,15 @@ def download(item, target, on_progress=None, should_stop=None, require_hash=True
     request = urllib.request.Request(item.url, headers={"User-Agent": hub.USER_AGENT})
     digest = hashlib.sha256()
     done = 0
+    stopped = False
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             total = int(response.headers.get("Content-Length") or item.size or 0)
             with open(part, "wb") as out:
                 while True:
                     if should_stop is not None and should_stop():
-                        part.unlink(missing_ok=True)
-                        return False
+                        stopped = True
+                        break
                     block = response.read(DOWNLOAD_CHUNK)
                     if not block:
                         break
@@ -165,11 +173,18 @@ def download(item, target, on_progress=None, should_stop=None, require_hash=True
                     # More than was announced: a body that does not end is the
                     # one way this loop could run until the disk is full.
                     if total and done > total:
-                        part.unlink(missing_ok=True)
-                        raise LocalError(t("{name} is longer than it said it "
-                                           "would be.", name=item.name))
+                        break
                     if on_progress is not None:
                         on_progress(done, total)
+        # The part file is closed by now, which Windows needs before it lets it
+        # be removed. That is why the deletions below wait for the `with` blocks.
+        if stopped:
+            part.unlink(missing_ok=True)
+            return False
+        if total and done > total:
+            part.unlink(missing_ok=True)
+            raise LocalError(t("{name} is longer than it said it "
+                               "would be.", name=item.name))
         # A proxy notice or an error page that came back as 200 would otherwise
         # be renamed into place and only fail when something tries to read it.
         if total and done != total:
@@ -213,10 +228,17 @@ def _has_vulkan():
     """Whether a Vulkan loader is installed, which decides which build to fetch.
 
     llama.cpp publishes no CUDA build for Linux, so Vulkan is what a graphics
-    card gets here. The build without it is smaller and runs on the CPU, and
-    fetching the Vulkan one for a machine that cannot load it would only make
-    the download bigger.
+    card gets there; on Windows there is a CUDA build as well but Dikte sticks
+    to Vulkan and CPU, like everywhere else. The build without it is smaller
+    and runs on the CPU, and fetching the Vulkan one for a machine that cannot
+    load it would only make the download bigger.
     """
+    if sys.platform == "win32":
+        try:
+            ctypes.WinDLL("vulkan-1")
+            return True
+        except OSError:
+            return False
     return bool(ctypes.util.find_library("vulkan"))
 
 
@@ -225,9 +247,18 @@ def _wanted_assets(program):
 
     llama.cpp publishes native Metal-enabled macOS archives. whisper.cpp does
     not publish a runnable macOS server archive, so an arm64 Mac must not
-    mistake Ubuntu's arm64 archive for a native build.
+    mistake Ubuntu's arm64 archive for a native build. Windows ships zip
+    archives, and both projects have renamed their build artifacts across
+    releases, so a couple of endings are tried for each kind.
     """
     arch = _arch()
+    if sys.platform == "win32":
+        if program is WHISPER:
+            return (f"bin-{arch}.zip",)
+        if _has_vulkan():
+            return (f"bin-win-{arch}-vulkan.zip", f"bin-win-vulkan-{arch}.zip",
+                    f"bin-win-{arch}-cpu.zip", f"bin-win-cpu-{arch}.zip")
+        return (f"bin-win-{arch}-cpu.zip", f"bin-win-cpu-{arch}.zip")
     if sys.platform == "darwin":
         return () if program is WHISPER else (f"bin-macos-{arch}.tar.gz",)
     if program is LLAMA and _has_vulkan():
@@ -276,26 +307,46 @@ def system_program(program):
 
 
 def _find_binary(root, name):
-    for path in sorted(pathlib.Path(root).rglob(name)):
-        if path.is_file():
+    """The program inside an unpacked release.
+
+    On Windows the binaries carry a .exe suffix the archives' directory names
+    do not, so both names are looked for.
+    """
+    names = {name}
+    if sys.platform == "win32":
+        names.add(name + ".exe")
+    for path in sorted(pathlib.Path(root).rglob("*")):
+        if path.is_file() and path.name in names:
             return path
     return None
 
 
 def _extract(archive, into):
-    """Unpack a release tarball, refusing anything that reaches outside `into`.
+    """Unpack a release archive, refusing anything that reaches outside `into`.
 
-    The archives lay their libraries next to their binaries and are linked with
-    an $ORIGIN runpath, so a whole directory is what has to survive the trip and
-    the binary cannot be lifted out of it.
+    The archives lay their libraries next to their binaries and are linked so
+    they find each other by directory (an $ORIGIN runpath on Linux, the DLLs
+    sitting beside the .exe on Windows), so a whole directory is what has to
+    survive the trip and the binary cannot be lifted out of it.
     """
     try:
+        if str(archive).endswith(".zip"):
+            with zipfile.ZipFile(archive) as zf:
+                root = into.resolve()
+                for member in zf.infolist():
+                    target = (into / member.filename).resolve()
+                    if root != target and root not in target.parents:
+                        raise LocalError(t(
+                            "The archive tried to unpack outside its folder: "
+                            "{name}", name=member.filename))
+                zf.extractall(into)
+            return
         with tarfile.open(archive, "r:gz") as tar:
             try:
                 tar.extractall(into, filter="data")
             except TypeError:      # Python without the extraction filters
                 tar.extractall(into)
-    except (tarfile.TarError, OSError) as exc:
+    except (tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
         raise LocalError(t("Could not unpack {name}: {error}",
                            name=os.path.basename(str(archive)), error=exc)) from exc
 
@@ -588,10 +639,12 @@ class Server:
                                    name=self.program.name, error=exc)) from exc
             try:
                 with sink:
+                    flags = (getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                             if sys.platform == "win32" else 0)
                     proc = subprocess.Popen(
                         args + ["--host", HOST, "--port", str(port)],
                         stdout=sink, stderr=subprocess.STDOUT,
-                        stdin=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL, creationflags=flags,
                     )
             except OSError as exc:
                 raise LocalError(t("Could not start {name}: {error}",
@@ -691,12 +744,30 @@ class Server:
         could be somebody else's copy; the name together with Dikte's own data
         directory on the command line could not.
         """
+        if sys.platform == "win32":
+            return self._win32_is_ours(pid)
         try:
             blob = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes()
         except OSError:
             return False
         return (self.program.binary.encode() in blob
                 and str(DATA_DIR).encode() in blob)
+
+    def _win32_is_ours(self, pid):
+        """Windows has no /proc; the command line comes from WMI instead."""
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 f"(Get-CimInstance Win32_Process "
+                 f"-Filter \"ProcessId={int(pid)}\").CommandLine"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return False
+        if result.returncode != 0:
+            return False
+        line = result.stdout or ""
+        return self.program.binary in line and str(DATA_DIR) in line
 
     def sweep(self):
         """Kill a server a previous Dikte left behind. True when one was found.

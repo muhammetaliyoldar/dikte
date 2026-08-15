@@ -8,6 +8,7 @@ config and now shadows the default.
 
 import json
 import os
+import sys
 import unittest
 from unittest import mock
 
@@ -90,7 +91,9 @@ class Saving(DikteTest):
         self.assertTrue(cfg.CONFIG_FILE.exists())
 
     def test_the_file_is_readable_by_nobody_else(self):
-        """It holds two API keys."""
+        """It holds two API keys. Windows has no POSIX permission bits."""
+        if sys.platform == "win32":
+            self.skipTest("Windows files have no mode bits")
         cfg.Config().save()
         self.assertEqual(cfg.CONFIG_FILE.stat().st_mode & 0o777, 0o600)
 
@@ -467,19 +470,23 @@ class Directories(unittest.TestCase):
         with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": "/c",
                                           "XDG_DATA_HOME": "/d"}):
             config_dir, data_dir = cfg._directories("linux")
-        self.assertEqual(str(config_dir), "/c/dikte")
-        self.assertEqual(str(data_dir), "/d/dikte")
+        # On Windows pathlib renders the same places with backslashes.
+        flat = lambda path: str(path).replace(os.sep, "/")
+        self.assertEqual(flat(config_dir), "/c/dikte")
+        self.assertEqual(flat(data_dir), "/d/dikte")
 
     def test_linux_without_the_variables_set(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             config_dir, data_dir = cfg._directories("linux")
-        self.assertTrue(str(config_dir).endswith("/.config/dikte"))
-        self.assertTrue(str(data_dir).endswith("/.local/share/dikte"))
+        flat = lambda path: str(path).replace(os.sep, "/")
+        self.assertTrue(flat(config_dir).endswith("/.config/dikte"))
+        self.assertTrue(flat(data_dir).endswith("/.local/share/dikte"))
 
     def test_a_mac_keeps_both_in_application_support(self):
         config_dir, data_dir = cfg._directories("darwin")
         self.assertEqual(config_dir, data_dir)
-        self.assertTrue(str(config_dir).endswith("/Library/Application Support/Dikte"))
+        flat = lambda path: str(path).replace(os.sep, "/")
+        self.assertTrue(flat(config_dir).endswith("/Library/Application Support/Dikte"))
 
     def test_a_mac_does_not_read_the_xdg_variables(self):
         """A Mac with them set from some other tool still stores in one place."""

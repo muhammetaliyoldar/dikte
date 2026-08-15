@@ -28,6 +28,7 @@ import audio
 import cleanup
 import config as cfg
 import filetranscribe
+import ggml
 import hotkey
 import ipc
 import meeting
@@ -188,13 +189,25 @@ def cmd_plain(opts):
     return out(opts, reply, "")
 
 
+def _stdin_text():
+    """What a pipe offered, or "" when nothing did.
+
+    A captured or closed stdin can raise instead of returning, and piping
+    through an empty file is the normal way to say "nothing".
+    """
+    try:
+        return sys.stdin.read()
+    except (OSError, ValueError):
+        return ""
+
+
 # --- the agent -------------------------------------------------------------
 
 def cmd_ask(opts):
     """Put a command to the agent. With no text, record one first."""
     text = " ".join(opts.text).strip() if opts.text else ""
     if not text and not sys.stdin.isatty():
-        text = sys.stdin.read().strip()
+        text = _stdin_text().strip()
     if not text:
         reply = _ask_instance(opts, "ask", wait=opts.wait,
                               paste=opts.paste if opts.paste else None)
@@ -564,7 +577,7 @@ def cmd_config_set(opts):
     if raw is None:
         if sys.stdin.isatty():
             return fail(opts, "no value given, and nothing on stdin to read", 2)
-        raw = sys.stdin.read().rstrip("\n")
+        raw = _stdin_text().rstrip("\n")
     try:
         value = _coerce(opts.key, raw)
     except ValueError as exc:
@@ -641,6 +654,9 @@ def cmd_devices(opts):
                  "default": name == default}
                 for name, desc in audio.list_monitors()]
     if not mics and not monitors:
+        if sys.platform == "win32":
+            return fail(opts, "ffmpeg found nothing; is a microphone "
+                              "or loopback device installed?")
         return fail(opts, "pactl found nothing; is PipeWire running?")
 
     lines = ["Microphones:"]
@@ -765,10 +781,21 @@ def cmd_status(opts):
 def cmd_doctor(opts):
     """What the settings window checks behind its buttons, in one pass."""
     conf = cfg.Config()
-    wanted = ["pw-record", "wl-copy", "ydotool", "ffmpeg", "pactl", "kwriteconfig6",
-              assistant.executable(assistant.provider(conf)) or "claude",
-              cleanup.executable(cleanup.provider(conf))]
+    if sys.platform == "win32":
+        # No shortcut helpers or console audio stack here; the whisper/llama
+        # servers come from ggml into Dikte's own folder rather than the PATH.
+        wanted = ["ffmpeg", ggml.program_path(ggml.WHISPER) and "whisper-server",
+                  ggml.program_path(ggml.LLAMA) and "llama-server",
+                  assistant.executable(assistant.provider(conf)) or "claude",
+                  cleanup.executable(cleanup.provider(conf))]
+    else:
+        wanted = ["pw-record", "wl-copy", "ydotool", "ffmpeg", "pactl", "kwriteconfig6",
+                  assistant.executable(assistant.provider(conf)) or "claude",
+                  cleanup.executable(cleanup.provider(conf))]
     programs = {name: shutil.which(name) or "" for name in wanted if name}
+    if sys.platform == "win32":
+        programs["whisper-server"] = ggml.program_path(ggml.WHISPER)
+        programs["llama-server"] = ggml.program_path(ggml.LLAMA)
     target = conf.transcribe_target()
     cleaner = cleanup.provider(conf)
     checks = {
