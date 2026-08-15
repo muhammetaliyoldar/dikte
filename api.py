@@ -186,14 +186,22 @@ def _close_socket_handle(sock):
     except OSError:
         return
     try:
-        _WS2_32.closesocket(handle)
+        ws2_32 = _ws2_32()
+        ws2_32.closesocket(handle)
     except OSError:
         pass
 
 
-_WS2_32 = ctypes.WinDLL("ws2_32")
-_WS2_32.closesocket.argtypes = [ctypes.c_size_t]
-_WS2_32.closesocket.restype = ctypes.c_int
+def _ws2_32():
+    """ws2_32, opened once. WinDLL only exists on Windows, and importing it
+    at module level would crash every other platform, so it is opened on the
+    first call, which is Windows-only anyway."""
+    if not hasattr(_ws2_32, "dll"):
+        dll = ctypes.WinDLL("ws2_32")
+        dll.closesocket.argtypes = [ctypes.c_size_t]
+        dll.closesocket.restype = ctypes.c_int
+        _ws2_32.dll = dll
+    return _ws2_32.dll
 
 
 class _TrackedHTTP(urllib.request.HTTPHandler):
