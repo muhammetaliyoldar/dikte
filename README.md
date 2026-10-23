@@ -66,7 +66,7 @@ sudo apt update
 sudo apt install -y git ffmpeg pulseaudio-utils xclip xdotool python3-venv
 pip install --user PyQt6
 
-git clone <your-repo-url> dikte && cd dikte
+git clone https://github.com/muhammetaliyoldar/dikte.git && cd dikte
 python dikte.py       # the settings window opens on first run
 ```
 
@@ -125,26 +125,31 @@ from the settings window), or in the cloud: speech to text on **OpenAI**,
 **Groq** or **OpenRouter**, cleanup on OpenRouter or, when either is installed,
 on Claude Code or Codex.
 
-Keys are read from the environment — `OPENAI_API_KEY`, `GROQ_API_KEY`,
-`OPENROUTER_API_KEY` — and are never stored in a file:
+The out-of-the-box speech-to-text provider is `local`, which needs no key. For
+the cloud providers a key is looked up in this order:
 
-- **On Windows** the keys you enter in Settings are stored by the installer as
-  user environment variables in the registry (`HKCU\Environment`), which is why
-  a shell started earlier can still find them.
-- **On Linux** export them in `~/.bashrc` (or `~/.zshrc`):
+1. the key entered in Settings → API, kept in `config.json` (written with mode
+   600 on Linux and macOS);
+2. the environment variable of the same name: `OPENAI_API_KEY`, `GROQ_API_KEY`,
+   `OPENROUTER_API_KEY`;
+3. **on Windows only**, the user environment in the registry
+   (`HKCU\Environment`), so a variable set after Dikte's parent process
+   started is still found.
 
-  ```sh
-  export GROQ_API_KEY="gsk_…"
-  export OPENROUTER_API_KEY="sk-or-…"
-  source ~/.bashrc
-  ```
+To keep the keys out of the config file on Linux, leave the fields empty and
+export them in `~/.bashrc` (or `~/.zshrc`):
 
-  then restart Dikte. The recommended, cheapest setup is **Groq** for speech to
-  text (`openai/whisper-large-v3-turbo`, about $0.04 per hour of audio, with a
-  generous free quota) and **OpenRouter** for cleanup (`google/gemini-2.5-flash-lite`,
-  a few hundredths of a cent per dictation). Settings are stored in
-  `%APPDATA%\Dikte\config.json` on Windows, `~/.config/dikte/config.json` on
-  Linux; downloaded models in `%LOCALAPPDATA%\Dikte` and `~/.local/share/dikte`.
+```sh
+export GROQ_API_KEY="gsk_…"
+export OPENROUTER_API_KEY="sk-or-…"
+```
+
+then restart Dikte. A cheap cloud setup is **Groq** for speech to text
+(default model `whisper-large-v3-turbo`) and **OpenRouter** for cleanup
+(default model `google/gemini-3.5-flash-lite`). Settings are stored in
+`%APPDATA%\Dikte\config.json` on Windows, `~/.config/dikte/config.json` on
+Linux; downloaded programs and models in `%LOCALAPPDATA%\Dikte` and
+`~/.local/share/dikte`.
 
 ## Using it
 
@@ -262,6 +267,41 @@ hotkey.py         shortcut installation and the built-in hotkey listener
 paste.py          clipboard and key-press wrappers
 i18n.py           the string table
 ```
+
+## Command line
+
+`dikte --help` lists every verb; each takes `--json` and `-q`. The main ones:
+
+| Verb | Does |
+| --- | --- |
+| `record [--seconds N] [--paste]` | record and print what was said |
+| `toggle` / `start` / `stop` / `cancel` | drive the recording like the shortcut does |
+| `ask [text] [--provider claude\|codex\|openrouter]` | put a command to the agent |
+| `session [status\|reset]` | the agent's conversation |
+| `transcribe FILE [-o OUT] [--srt] [--timestamps]` | transcribe an audio or video file |
+| `meeting`, `meetings …` | start/end a meeting, list and retry past ones |
+| `history …`, `config …`, `shortcut …` | past dictations, settings and global shortcuts |
+| `prompt`, `models` | the prompt a run would send; model ids a provider offers |
+| `devices`, `status`, `doctor`, `test-key` | inspection and diagnostics |
+| `settings`, `restart`, `quit` | the tray menu |
+
+## Development
+
+```sh
+python -m unittest discover          # the whole suite; no network, no sound device
+```
+
+The tests need only PyQt6 and run offscreen. GitHub Actions
+(`.github/workflows/tests.yml`) runs them on Ubuntu and Windows with Python
+3.11, 3.12 and 3.13. See [CONTRIBUTING.md](CONTRIBUTING.md) for the test helpers
+and the pitfalls of this codebase.
+
+## Project status
+
+Upstream history by Yusuf İpek and contributors runs from 25 July 2026 to
+10 August 2026. This fork adds the Windows port, Ubuntu/macOS notes, the
+PowerShell installers and the Windows CI job (15 August 2026), on the `master`
+branch. `update.sh` / `update.ps1` pull new commits from this repository.
 
 ## License
 
