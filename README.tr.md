@@ -122,27 +122,26 @@ llama.cpp; ayarlar penceresinden indirilir ve doğrulanır) ya da bulutta:
 sesi yazıya çevirme **OpenAI**, **Groq** veya **OpenRouter**'da; temizleme
 OpenRouter'da veya kuruluysa Claude Code ya da Codex'te.
 
-Anahtarlar ortam değişkenlerinden okunur — `OPENAI_API_KEY`, `GROQ_API_KEY`,
-`OPENROUTER_API_KEY` — ve hiçbir dosyada saklanmaz:
+Hazır gelen sesi yazıya çevirme sağlayıcısı `local`'dir ve anahtar gerektirmez. Bulut sağlayıcıları için
+anahtar şu sırayla aranır:
 
-- **Windows'ta** Ayarlar'da girdiğin anahtarlar kurulum betiği tarafından
-  kullanıcı ortam değişkeni olarak kayıt defterine (`HKCU\Environment`)
-  yazılır; daha önce açılmış bir kabuk bile onları böyle bulur.
-- **Linux'ta** `~/.bashrc` (ya da `~/.zshrc`) içine export ekle:
+1. Ayarlar → API'de girilen anahtar; `config.json` içinde tutulur (Linux ve macOS'ta 600 izniyle yazılır);
+2. aynı adlı ortam değişkeni: `OPENAI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`;
+3. **yalnız Windows'ta**, kayıt defterindeki kullanıcı ortamı (`HKCU\Environment`); böylece Dikte'nin üst
+   süreci başladıktan sonra tanımlanan değişken de bulunur.
 
-  ```sh
-  export GROQ_API_KEY="gsk_…"
-  export OPENROUTER_API_KEY="sk-or-…"
-  source ~/.bashrc
-  ```
+Linux'ta anahtarları yapılandırma dosyasının dışında tutmak için alanları boş bırak ve `~/.bashrc` (ya da
+`~/.zshrc`) içine export ekle:
 
-  ve Dikte'yi yeniden başlat. Önerilen en ucuz düzen: sesi yazıya çevirmede
-  **Groq** (`openai/whisper-large-v3-turbo`, ses saati başına ~$0.04, cömert
-  ücretsiz kotasıyla) ve temizlemede **OpenRouter**
-  (`google/gemini-2.5-flash-lite`, dikte başına sentin yüzde biri). Ayarlar
-  Windows'ta `%APPDATA%\Dikte\config.json`, Linux'ta `~/.config/dikte/config.json`
-  içinde; indirilen modeller `%LOCALAPPDATA%\Dikte` ve `~/.local/share/dikte`
-  altında.
+```sh
+export GROQ_API_KEY="gsk_…"
+export OPENROUTER_API_KEY="sk-or-…"
+```
+
+ve Dikte'yi yeniden başlat. Ucuz bir bulut düzeni: sesi yazıya çevirmede **Groq** (varsayılan model
+`whisper-large-v3-turbo`), temizlemede **OpenRouter** (varsayılan model `google/gemini-3.5-flash-lite`).
+Ayarlar Windows'ta `%APPDATA%\Dikte\config.json`, Linux'ta `~/.config/dikte/config.json` içinde; indirilen
+programlar ve modeller `%LOCALAPPDATA%\Dikte` ve `~/.local/share/dikte` altında.
 
 ## Kullanım
 
